@@ -7,6 +7,11 @@ camera:
     width: 640
     height: 480
   fps: 30
+  camera_intrinsics:[
+            [600.0, 0.0, 320.0],   # fx, 0, cx
+            [0.0, 600.0, 240.0],   # 0, fy, cy
+            [0.0, 0.0, 1.0]        # 0, 0, 1
+        ]
   depth_enabled: true
 
 # YOLO模型配置

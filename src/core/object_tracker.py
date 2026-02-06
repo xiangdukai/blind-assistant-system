@@ -83,7 +83,7 @@ class ObjectTracker:
             detections[det_idx]['track_id'] = self.tracks[track_idx].track_id
 
         # 步骤4: 为未匹配的检测创建新轨迹
-        for det_idx in unmatched_detections:
+        for det_idx in unmatched_detections:           
             self._create_track(detections[det_idx])
             detections[det_idx]['track_id'] = self.next_id - 1
 
@@ -119,6 +119,9 @@ class ObjectTracker:
         iou_matrix = np.zeros((len(detections), len(self.tracks)))
         for d, det in enumerate(detections):
             for t, track in enumerate(self.tracks):
+                if det['class_id'] != track.class_id:
+                    iou_matrix[d, t] = 0  # 不同类别，IOU设为0，无法匹配
+                    continue
                 iou_matrix[d, t] = self._calculate_iou(det['bbox'], track.bbox)
 
         # 简单贪婪匹配（实际应使用匈牙利算法）
@@ -201,9 +204,30 @@ if __name__ == "__main__":
     # 测试代码
     config = {
         'max_age': 30,
-        'min_hits': 3,
-        'iou_threshold': 0.3
+        'min_hits': 2,
+        'iou_threshold': 0.2
+        
     }
-
+    detections = [
+        {"bbox":[10,10,30,30],"class_id":0},
+        {"bbox":[40,10,50,20],"class_id":1}
+    ]
     tracker = ObjectTracker(config)
     print("目标跟踪模块初始化成功")
+    matched_detections = tracker.update(detections)
+    print("目标跟踪模块数据更新成功(第一次)")
+    for idx,det in enumerate(matched_detections):
+        class_id  = det.get("class_id","unknowned")
+        track_id = det.get("track_id","unknowned")
+        print(f"检测结果:{idx+1},class_id:{class_id},track_id:{track_id}\n")
+    detections_1 = [
+        {"bbox":[10,20,30,40],"class_id":0},
+        {"bbox":[40,15,50,25],"class_id":1},
+        {"bbox":[20,10,30,30],"class_id":2}
+    ] 
+    matched_detections = tracker.update(detections_1)
+    print("目标跟踪模块数据更新成功(第二次)")
+    for idx,det in enumerate(matched_detections):
+        class_id  = det.get("class_id","unknowned")
+        track_id = det.get("track_id","unknowned")
+        print(f"检测结果:{idx+1},class_id:{class_id},track_id:{track_id}\n")

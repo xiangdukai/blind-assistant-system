@@ -21,6 +21,13 @@ class DangerDetector:
         self.prediction_time = config.get('prediction_time', 3.0)  # 预测时间(秒)
         self.history_frames = config.get('history_frames', 10)  # 历史帧数
 
+        # 相机内参
+        self.camera_intrinsics = np.array(config.get('camera_intrinsics',[
+            [600.0, 0.0, 320.0],
+            [0.0, 600.0, 240.0], 
+            [0.0, 0.0, 1.0] 
+        ]))
+
         # 危险等级阈值
         self.danger_levels = config.get('danger_levels', {
             'high': 1.5,
@@ -99,8 +106,24 @@ class DangerDetector:
         depth = depth_map[center_y, center_x]
 
         # TODO: 使用相机内参将像素坐标转换为3D坐标
+        
+        fx = self.camera_intrinsics[0, 0]  # 焦距x（像素）
+        fy = self.camera_intrinsics[1, 1]  # 焦距y（像素）
+        cx = self.camera_intrinsics[0, 2]  # 主点x（像素，图像中心）
+        cy = self.camera_intrinsics[1, 2]  # 主点y（像素，图像中心）
+        '''
+        # 像素坐标(u,v)与相机坐标(X,Y,Z)的关系：
+        # u = fx * (X/Z) + cx  → X = (u - cx) * Z / fx
+        # v = fy * (Y/Z) + cy  → Y = (v - cy) * Z / fy
+        # Z = 深度值（相机坐标系z轴）
+        x = (u - cx) * z / fx
+        y = (v - cy) * z / fy
+        '''
+        position_x = (center_x - cx) * depth / fx
+        position_y = (center_y - cy) * depth / fy
+    
         # 这里简化处理，实际需要相机标定参数
-        position_3d = np.array([center_x, center_y, depth])
+        position_3d = np.array([position_x, position_y, depth])
 
         return position_3d
 
@@ -247,6 +270,41 @@ if __name__ == "__main__":
         'prediction_time': 3.0,
         'history_frames': 10
     }
+    detections_1 = [
+        {"bbox":[10,10,30,30],"class_id":0,"track_id":1},
+        {"bbox":[40,10,50,20],"class_id":1,"track_id":2}
+    ]
+    detections_2 = [
+        {"bbox":[10,20,30,40],"class_id":0,"track_id":1},
+        {"bbox":[40,15,50,25],"class_id":1,"track_id":2},
+        {"bbox":[20,10,30,30],"class_id":2,"track_id":3}
+    ] 
+    def create_fake_depth_map(detections, camera_resolution=(640, 480)):
+        width, height = camera_resolution
+
+        depth_map = np.full((height, width), 2.0, dtype=np.float32)  # 维度：[height, width]
+        
+        for det in detections:
+            bbox = det["bbox"]
+            cx = (bbox[0] + bbox[2]) // 2  # 中心点x（像素）
+            cy = (bbox[1] + bbox[3]) // 2  # 中心点y（像素）
+            
+            # 为不同目标分配不同深度
+            if det["class_id"] == 0:
+                target_depth = 1.5  # class_id=0的目标深度设为1.5米
+            elif det["class_id"] == 1:
+                target_depth = 1.8  # class_id=1的目标深度设为1.8米
+            else:
+                target_depth = 1.7  # 其他类别默认1.7米
+            
+            if 0 <= cy < height and 0 <= cx < width:  # 避免像素越界
+                depth_map[cy, cx] = target_depth
+        
+        return depth_map
 
     detector = DangerDetector(config)
     print("动态危险预测模块初始化成功")
+    detector.update(detections_1,create_fake_depth_map(detections_1))
+    print(f"动态危险预测模块更新成功(第一次)\n{detector.trajectories}")
+    detector.update(detections_2,create_fake_depth_map(detections_2))
+    print(f"动态危险预测模块更新成功(第二次)\n{detector.trajectories}")

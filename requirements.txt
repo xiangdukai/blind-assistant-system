@@ -16,7 +16,7 @@ Pillow>=10.0.0
 # 点云处理
 open3d>=0.17.0
 
-# 目标跟踪
+#目标跟踪
 filterpy>=1.4.5
 scipy>=1.10.0
 scikit-learn>=1.3.0
