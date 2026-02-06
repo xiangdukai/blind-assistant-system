@@ -1,0 +1,108 @@
+# 盲人辅助系统配置文件
+
+# 相机配置
+camera:
+  type: "realsense"  # realsense / webcam
+  resolution:
+    width: 640
+    height: 480
+  fps: 30
+  depth_enabled: true
+
+# YOLO模型配置
+yolo:
+  model_path: "models/yolov8n.pt"
+  confidence_threshold: 0.5
+  iou_threshold: 0.45
+  device: "cpu"  # cpu / cuda
+
+# 动态危险预测
+danger_detection:
+  enabled: true
+  safe_distance: 2.0  # 安全距离(米)
+  prediction_time: 3.0  # 预测时间(秒)
+  history_frames: 10  # 保留历史帧数
+  danger_levels:
+    high: 1.5  # 高危险距离阈值(秒)
+    medium: 3.0  # 中危险距离阈值(秒)
+
+# 目标跟踪配置
+tracker:
+  type: "deepsort"  # deepsort / bytetrack
+  max_age: 30
+  min_hits: 3
+  iou_threshold: 0.3
+
+# 楼梯检测
+stair_detection:
+  enabled: true
+  canny_threshold1: 50
+  canny_threshold2: 150
+  hough_threshold: 100
+  min_line_length: 50
+  max_line_gap: 10
+
+# 斑马线检测
+crosswalk_detection:
+  enabled: true
+  model_path: "models/crosswalk.pt"
+
+# 文字识别
+ocr:
+  enabled: true
+  language: "ch"  # ch / en
+  use_angle_cls: true
+  det_model: "ch_PP-OCRv4_det"
+  rec_model: "ch_PP-OCRv4_rec"
+
+# 衣物检索
+clothing_search:
+  enabled: true
+  use_llm: true  # 使用大模型API
+  llm_api_key: ""  # API密钥
+  llm_base_url: ""  # API地址
+
+# 盲道检测
+blind_path_detection:
+  enabled: true
+  model_type: "pidnet"  # pidnet
+  model_path: "models/pidnet_s_cityscapes.pth"
+
+# 导航
+navigation:
+  enabled: true
+  gps_enabled: false
+  map_api: "amap"  # amap / baidu / google
+  api_key: ""
+
+# 语音反馈
+voice:
+  enabled: true
+  engine: "pyttsx3"  # pyttsx3 / openai
+  language: "zh-CN"
+  rate: 150  # 语速
+  volume: 1.0  # 音量
+
+# 震动反馈
+vibration:
+  enabled: true
+  connection_type: "bluetooth"  # bluetooth / serial
+  port: ""  # 串口端口
+  intensity_levels:
+    low: 100
+    medium: 200
+    high: 255
+
+# 日志配置
+logging:
+  level: "INFO"  # DEBUG / INFO / WARNING / ERROR
+  file_path: "logs/system.log"
+  console_output: true
+
+# 测试模式
+test_mode:
+  enabled: false
+  use_test_images: false
+  test_images_path: "tests/test_images/"
+  save_results: true
+  results_path: "tests/results/"
