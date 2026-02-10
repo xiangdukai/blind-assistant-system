@@ -5,7 +5,8 @@
 
 import numpy as np
 from typing import List, Dict, Tuple, Optional
-
+from collections import deque
+import time
 
 class DangerDetector:
     """动态危险预测器"""
@@ -20,13 +21,14 @@ class DangerDetector:
         self.safe_distance = config.get('safe_distance', 2.0)  # 安全距离(米)
         self.prediction_time = config.get('prediction_time', 3.0)  # 预测时间(秒)
         self.history_frames = config.get('history_frames', 10)  # 历史帧数
-
+        self.ttl_threshold = config.get('ttl_threshold', 90)  # 轨迹TTL阈值（帧），默认90帧=3秒（30fps）
         # 相机内参
         self.camera_intrinsics = np.array(config.get('camera_intrinsics',[
             [600.0, 0.0, 320.0],
             [0.0, 600.0, 240.0], 
             [0.0, 0.0, 1.0] 
         ]))
+        self.fps = config.get('fps',30)
 
         # 危险等级阈值
         self.danger_levels = config.get('danger_levels', {
@@ -34,8 +36,10 @@ class DangerDetector:
             'medium': 3.0
         })
 
-        # 跟踪轨迹字典 {track_id: trajectory_data}
+        # 跟踪轨迹字典 {track_id: deque}
         self.trajectories = {}
+        # 轨迹TTL字典 {track_id: ttl_count}
+        self.trajectory_ttl = {}
 
     def update(self, detections: List[Dict], depth_map: np.ndarray) -> List[Dict]:
         """
@@ -48,6 +52,7 @@ class DangerDetector:
         Returns:
             危险目标列表，每个元素包含危险等级、碰撞时间、方向等信息
         """
+        
         dangers = []
 
         for det in detections:
@@ -59,10 +64,10 @@ class DangerDetector:
             self._update_trajectory(track_id, position_3d)
 
             # 步骤3: 计算速度
-            velocity = self._calculate_velocity(track_id)
+            velocity, acceleration = self._calculate_velocity_and_acceleration(track_id)
 
             # 步骤4: 预测轨迹
-            predicted_trajectory = self._predict_trajectory(position_3d, velocity)
+            predicted_trajectory = self._predict_trajectory(position_3d, velocity, acceleration)
 
             # 步骤5: 碰撞检测
             collision_info = self._detect_collision(predicted_trajectory)
@@ -84,6 +89,19 @@ class DangerDetector:
                     'distance': collision_info['distance']
                 })
 
+        #更新ttl时间
+        for track_id in list(self.trajectory_ttl.keys()):
+            self.trajectory_ttl[track_id] += 1
+        #过滤已过期的track_id
+        expired_track_ids = [ 
+            track_id for track_id,ttl in self.trajectory_ttl.items()
+            if ttl>self.ttl_threshold
+        ]
+        #执行删除操作
+        for track_id in expired_track_ids:
+            del self.trajectories[track_id]
+            del self.trajectory_ttl[track_id]
+
         return dangers
 
     def _get_3d_position(self, bbox: Tuple[int, int, int, int],
@@ -93,36 +111,50 @@ class DangerDetector:
 
         Args:
             bbox: 边界框 (x1, y1, x2, y2)
-            depth_map: 深度图
+            depth_map: 深度图（shape: [height, width]，单位：米）
 
         Returns:
             3D坐标 (x, y, z)
         """
-        # 计算边界框中心点
-        center_x = (bbox[0] + bbox[2]) // 2
-        center_y = (bbox[1] + bbox[3]) // 2
+        #安全校验bbox边界，避免越界 ==========
+        depth_h, depth_w = depth_map.shape
+        x1, y1, x2, y2 = bbox
 
-        # 从深度图获取深度值
-        depth = depth_map[center_y, center_x]
-
-        # TODO: 使用相机内参将像素坐标转换为3D坐标
+        x1 = max(0, min(x1, depth_w - 1))
+        y1 = max(0, min(y1, depth_h - 1))
+        x2 = max(0, min(x2, depth_w - 1))
+        y2 = max(0, min(y2, depth_h - 1))
+        
+        # 若bbox无效（如x1>=x2或y1>=y2），返回默认3D坐标
+        if x1 >= x2 or y1 >= y2:
+            return np.array([0.0, 0.0, 5.0])
+        
+        # 提取检测框内的所有深度像素
+        bbox_depth = depth_map[y1:y2+1, x1:x2+1]
+        
+        # 保留 有效深度范围
+        valid_depth_mask = (bbox_depth > 0.1) & (bbox_depth < 10.0) & ~np.isnan(bbox_depth)
+        valid_depths = bbox_depth[valid_depth_mask]
+        
+        #中位数滤波
+        if len(valid_depths) > 0:
+            depth = np.median(valid_depths)
+        else:
+            #框内无有效值时，使用默认深度兜底
+             depth = 5.0  
+            
+        # 重新计算有效中心点（裁剪后的bbox）
+        center_x = (x1 + x2) // 2
+        center_y = (y1 + y2) // 2
         
         fx = self.camera_intrinsics[0, 0]  # 焦距x（像素）
         fy = self.camera_intrinsics[1, 1]  # 焦距y（像素）
         cx = self.camera_intrinsics[0, 2]  # 主点x（像素，图像中心）
         cy = self.camera_intrinsics[1, 2]  # 主点y（像素，图像中心）
-        '''
-        # 像素坐标(u,v)与相机坐标(X,Y,Z)的关系：
-        # u = fx * (X/Z) + cx  → X = (u - cx) * Z / fx
-        # v = fy * (Y/Z) + cy  → Y = (v - cy) * Z / fy
-        # Z = 深度值（相机坐标系z轴）
-        x = (u - cx) * z / fx
-        y = (v - cy) * z / fy
-        '''
+        
         position_x = (center_x - cx) * depth / fx
         position_y = (center_y - cy) * depth / fy
-    
-        # 这里简化处理，实际需要相机标定参数
+
         position_3d = np.array([position_x, position_y, depth])
 
         return position_3d
@@ -135,50 +167,79 @@ class DangerDetector:
             track_id: 跟踪ID
             position: 当前3D位置
         """
+        #过滤无效位置
+        if np.allclose(position, np.array([0.0, 0.0, 5.0])) or position[2] < 0.1:
+            self.trajectory_ttl[track_id] = 0
+            return
+        
         if track_id not in self.trajectories:
-            self.trajectories[track_id] = []
+            # 初始化deque，设置maxlen自动截断
+            self.trajectories[track_id] = deque(maxlen=self.history_frames)
 
-        # 添加当前位置
-        self.trajectories[track_id].append(position)
+        # 添加当前位置,时间戳
+        timestamp = time.time()  # 记录当前时间戳
+        self.trajectories[track_id].append((position, timestamp))  # 存储（位置，时间戳）
 
-        # 保持固定长度
-        if len(self.trajectories[track_id]) > self.history_frames:
-            self.trajectories[track_id].pop(0)
+        #更新ttl
+        self.trajectory_ttl[track_id] = 0
 
-    def _calculate_velocity(self, track_id: int) -> Optional[np.ndarray]:
+    def _calculate_velocity_and_acceleration(self, track_id: int) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
-        计算目标的运动速度
-
+        计算目标的瞬时速度和加速度（滑动平均平滑）
+        
         Args:
             track_id: 跟踪ID
-
+        
         Returns:
-            速度向量 (vx, vy, vz) 或 None
+            (速度向量vx,vy,vz, 加速度向量ax,ay,az) 或 (None, None)
         """
         if track_id not in self.trajectories:
-            return None
+            return None, None
 
-        trajectory = self.trajectories[track_id]
-        if len(trajectory) < 2:
-            return None
+        trajectory_data= self.trajectories[track_id]
+        positions = [item[0] for item in trajectory_data]
+        timestamps = [item[1] for item in trajectory_data]
 
-        # 计算平均速度
-        velocity = trajectory[-1] - trajectory[0]
-        velocity = velocity / len(trajectory)
-
-        return velocity
+        # 不足2帧：无速度；不足3帧：无加速度（退化为匀速）
+        if len(trajectory_data) < 2:
+            return None, None
+        if len(trajectory_data) < 3:
+            # 计算匀速速度
+            velocity = (positions[-1] - positions[0]) / (timestamps[-1]-timestamps[-2])
+            return velocity, None
+        
+        # 计算多组速度（滑动窗口），降低噪声影响
+        velocities = []
+        for i in range(len(trajectory_data) - 1):
+            v = (positions[i+1] - positions[i])/(timestamps[i+1]-timestamps[i])
+            velocities.append(v)
+        velocities = np.array(velocities)
+        smoothed_velocity = np.mean(velocities[-3:], axis=0)  # 取最后3组速度平均
+        
+        # 计算加速度
+        accelerations = []
+        for i in range(len(velocities) - 1):
+            a = (velocities[i+1] - velocities[i]) /(timestamps[i+1]-timestamps[i])
+            accelerations.append(a)
+        accelerations = np.array(accelerations)
+        smoothed_acceleration = np.mean(accelerations[-2:], axis=0)  # 取最后2组加速度平均
+        
+        return smoothed_velocity, smoothed_acceleration
 
     def _predict_trajectory(self, position: np.ndarray,
-                          velocity: Optional[np.ndarray],
-                          dt: float = 0.1) -> List[np.ndarray]:
+                      velocity: Optional[np.ndarray],
+                      acceleration: Optional[np.ndarray],
+                    ) -> List[np.ndarray]:
         """
-        预测未来轨迹（匀速直线运动模型）
-
+        预测未来轨迹（恒定加速度模型CA），无加速度时退化为匀速模型CV
+        
+        公式：x(t) = x0 + v0*t + 0.5*a*t²
         Args:
-            position: 当前位置
-            velocity: 速度向量
+            position: 当前位置 (x0,y0,z0)
+            velocity: 速度向量 (vx,vy,vz)
+            acceleration: 加速度向量 (ax,ay,az)
             dt: 时间步长(秒)
-
+        
         Returns:
             预测轨迹点列表
         """
@@ -186,10 +247,16 @@ class DangerDetector:
             return [position]
 
         trajectory = []
-        num_steps = int(self.prediction_time / dt)
+        num_steps = int(self.prediction_time*self.fps)
 
         for i in range(num_steps):
-            predicted_pos = position + velocity * (i * dt)
+            t = i /self.fps  
+            if acceleration is not None:
+                # 恒定加速度模型
+                predicted_pos = position + velocity * t + 0.5 * acceleration * (t **2)
+            else:
+                # 退化为匀速模型
+                predicted_pos = position + velocity * t
             trajectory.append(predicted_pos)
 
         return trajectory
@@ -215,7 +282,7 @@ class DangerDetector:
                 direction = self._calculate_direction(pos)
 
                 return {
-                    'time_to_collision': i * 0.1,  # 时间步长
+                    'time_to_collision': i /self.fps,
                     'distance': distance,
                     'direction': direction
                 }
@@ -268,7 +335,8 @@ if __name__ == "__main__":
     config = {
         'safe_distance': 2.0,
         'prediction_time': 3.0,
-        'history_frames': 10
+        'history_frames': 10,
+        'ttl_threshold': 5 
     }
     detections_1 = [
         {"bbox":[10,10,30,30],"class_id":0,"track_id":1},
@@ -282,13 +350,21 @@ if __name__ == "__main__":
     def create_fake_depth_map(detections, camera_resolution=(640, 480)):
         width, height = camera_resolution
 
-        depth_map = np.full((height, width), 2.0, dtype=np.float32)  # 维度：[height, width]
+        depth_map = np.full((height, width), 5.0, dtype=np.float32)  # 维度：[height, width]
         
         for det in detections:
             bbox = det["bbox"]
-            cx = (bbox[0] + bbox[2]) // 2  # 中心点x（像素）
-            cy = (bbox[1] + bbox[3]) // 2  # 中心点y（像素）
+            x1, y1, x2, y2 = bbox
             
+            # 裁剪坐标到图像范围内，避免索引越界
+            x1 = max(0, min(x1, width - 1))
+            y1 = max(0, min(y1, height - 1))
+            x2 = max(0, min(x2, width - 1))
+            y2 = max(0, min(y2, height - 1))
+            
+            # 跳过无效的bbox
+            if x1 >= x2 or y1 >= y2:
+                continue
             # 为不同目标分配不同深度
             if det["class_id"] == 0:
                 target_depth = 1.5  # class_id=0的目标深度设为1.5米
@@ -296,15 +372,14 @@ if __name__ == "__main__":
                 target_depth = 1.8  # class_id=1的目标深度设为1.8米
             else:
                 target_depth = 1.7  # 其他类别默认1.7米
-            
-            if 0 <= cy < height and 0 <= cx < width:  # 避免像素越界
-                depth_map[cy, cx] = target_depth
-        
+            depth_map[y1:y2+1, x1:x2+1] = target_depth
         return depth_map
 
     detector = DangerDetector(config)
     print("动态危险预测模块初始化成功")
-    detector.update(detections_1,create_fake_depth_map(detections_1))
-    print(f"动态危险预测模块更新成功(第一次)\n{detector.trajectories}")
+    dangers = detector.update(detections_1,create_fake_depth_map(detections_1))
+    print(f"动态危险预测模块更新成功(第一次)\ntrajectories:{detector.trajectories}")
+    print(f"dangers:{dangers}")
     detector.update(detections_2,create_fake_depth_map(detections_2))
-    print(f"动态危险预测模块更新成功(第二次)\n{detector.trajectories}")
+    print(f"动态危险预测模块更新成功(第二次)\ntrajectories:{detector.trajectories}")
+    print(f"dangers:{dangers}")
