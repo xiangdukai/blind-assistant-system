@@ -2,12 +2,20 @@
 
 # 相机配置
 camera:
-  type: "realsense"  # realsense / webcam
+  type: "stereo"  # stereo（USB双目摄像头） / realsense / webcam
+  camera_index: 0  # 摄像头设备编号
   resolution:
     width: 640
     height: 480
   fps: 30
   depth_enabled: true
+
+  # 相机内参（左相机，来自出厂标定）
+  intrinsics:
+    fx: 416.841180253704
+    fy: 416.465934495134
+    cx: 338.485167779639
+    cy: 230.419201769346
 
 # YOLO模型配置
 yolo:
@@ -21,17 +29,30 @@ danger_detection:
   enabled: true
   safe_distance: 2.0  # 安全距离(米)
   prediction_time: 3.0  # 预测时间(秒)
-  history_frames: 10  # 保留历史帧数
   danger_levels:
-    high: 1.5  # 高危险距离阈值(秒)
-    medium: 3.0  # 中危险距离阈值(秒)
+    high: 1.5  # 高危险碰撞时间阈值(秒)
+    medium: 3.0  # 中危险碰撞时间阈值(秒)
 
-# 目标跟踪配置
+  # 相机内参（左目，来自出厂标定）
+  camera_matrix:
+    fx: 416.841180253704
+    fy: 416.465934495134
+    cx: 338.485167779639
+    cy: 230.419201769346
+
+# 目标跟踪配置（3D空间跟踪 + 卡尔曼滤波）
 tracker:
-  type: "deepsort"  # deepsort / bytetrack
-  max_age: 30
-  min_hits: 3
-  iou_threshold: 0.3
+  type: "deepsort"  # 基于3D空间的DeepSORT实现
+  max_age: 30  # 最大未匹配帧数
+  min_hits: 3  # 最小匹配次数（确认轨迹）
+  distance_threshold: 1.0  # 3D空间距离阈值(米)，用于匈牙利算法匹配
+
+  # 相机内参（左目，来自出厂标定）
+  camera_matrix:
+    fx: 416.841180253704
+    fy: 416.465934495134
+    cx: 338.485167779639
+    cy: 230.419201769346
 
 # 楼梯检测
 stair_detection:
@@ -54,6 +75,17 @@ ocr:
   use_angle_cls: true
   det_model: "ch_PP-OCRv4_det"
   rec_model: "ch_PP-OCRv4_rec"
+
+# AI辅助感知（多模态大语言模型，非紧急场景每60帧调用一次）
+ai_assistant:
+  enabled: true
+  api_url: "https://api.wkcloud.com.cn/v1/chat/completions"
+  api_key: "sk-zokjJ30OdSyjdPaSW524a9MKkaHPBiOG2GKbIrBle8lxlb4I"
+  model: "gpt-4.1-mini"
+  max_tokens: 80
+  timeout: 15
+  jpeg_quality: 60
+  prompt: "你是盲人出行辅助系统的视觉感知模块。用不超过25个汉字的一句话描述图中对盲人行走最关键的信息。优先关注：障碍物（位置和距离）、台阶坡道、人群车辆、地面状况、路口标志。只输出描述，不加任何前缀。"
 
 # 衣物检索
 clothing_search:

@@ -20,7 +20,25 @@ class CrosswalkDetector:
             config: 配置字典
         """
         self.model_path = config.get('model_path', 'models/crosswalk.pt')
-        self.model = None  # TODO: 加载YOLO模型
+        self.confidence_threshold = config.get('confidence_threshold', 0.5)
+        self.model = None
+        self._load_model()
+
+    def _load_model(self):
+        """加载YOLO模型"""
+        try:
+            from ultralytics import YOLO
+            import os
+            if os.path.exists(self.model_path):
+                self.model = YOLO(self.model_path)
+                print(f"斑马线检测YOLO模型加载成功: {self.model_path}")
+            else:
+                print(f"警告: 斑马线检测模型文件不存在 ({self.model_path})，使用通用模型 yolov8n.pt")
+                self.model = YOLO('yolov8n.pt')
+        except ImportError:
+            print("警告: ultralytics未安装，斑马线YOLO检测不可用 (pip install ultralytics)")
+        except Exception as e:
+            print(f"斑马线检测YOLO模型加载失败: {e}")
 
     def detect(self, image: np.ndarray, depth_map: Optional[np.ndarray] = None) -> Optional[Dict]:
         """
@@ -77,12 +95,29 @@ class CrosswalkDetector:
         Returns:
             检测结果列表
         """
-        # TODO: 实现YOLO检测
-        # results = self.model(image)
-        # return results
+        if self.model is None:
+            return []
 
-        # 占位符返回
-        return []
+        # COCO类名到业务类名的映射
+        class_map = {
+            'car': 'car', 'truck': 'car', 'bus': 'car', 'motorcycle': 'car',
+            'traffic light': 'traffic_light',
+            'person': 'person',
+        }
+        # 若使用自定义模型，类名可能直接就是 'crosswalk'/'traffic_light'/'car'
+        results = self.model(image, conf=self.confidence_threshold, verbose=False)
+        detections = []
+        for r in results:
+            for box in r.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                raw_class = r.names[int(box.cls[0])]
+                mapped_class = class_map.get(raw_class, raw_class)
+                detections.append({
+                    'class': mapped_class,
+                    'bbox': (x1, y1, x2, y2),
+                    'confidence': float(box.conf[0])
+                })
+        return detections
 
     def _extract_direction(self, image: np.ndarray, bbox: tuple) -> float:
         """

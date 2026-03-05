@@ -20,8 +20,24 @@ class ClothingSearcher:
             config: 配置字典
         """
         self.use_llm = config.get('use_llm', False)
-        self.model = None  # TODO: 加载YOLO模型
+        self.model_path = config.get('model_path', 'models/yolov8n.pt')
+        self.confidence_threshold = config.get('confidence_threshold', 0.4)
+        self.model = None
         self.semantic_map = {}  # 语义地图: {item_id: item_info}
+        self._load_model()
+
+    def _load_model(self):
+        """加载YOLO模型"""
+        try:
+            from ultralytics import YOLO
+            import os
+            path = self.model_path if os.path.exists(self.model_path) else 'yolov8n.pt'
+            self.model = YOLO(path)
+            print(f"衣物检索YOLO模型加载成功: {path}")
+        except ImportError:
+            print("警告: ultralytics未安装，衣物YOLO检测不可用 (pip install ultralytics)")
+        except Exception as e:
+            print(f"衣物检索YOLO模型加载失败: {e}")
 
     def build_semantic_map(self, image: np.ndarray,
                           point_cloud: Optional[np.ndarray] = None) -> Dict:
@@ -116,8 +132,29 @@ class ClothingSearcher:
         Returns:
             检测结果列表
         """
-        # TODO: 实现YOLO检测
+        if self.model is None:
+            return []
+
+        # 与衣物相关的 COCO 类名
+        clothing_classes = {
+            'handbag', 'backpack', 'suitcase', 'tie',
+            # 自定义模型可能包含的类名
+            'shirt', 'pants', 'dress', 'jacket', 'coat',
+            'shorts', 'skirt', 't-shirt', 'sweater', 'hoodie', 'clothing'
+        }
+        results = self.model(image, conf=self.confidence_threshold, verbose=False)
         detections = []
+        for r in results:
+            for box in r.boxes:
+                class_name = r.names[int(box.cls[0])]
+                if class_name.lower() not in clothing_classes:
+                    continue
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                detections.append({
+                    'class': class_name,
+                    'bbox': (x1, y1, x2, y2),
+                    'confidence': float(box.conf[0])
+                })
         return detections
 
     def _extract_color(self, image: np.ndarray, bbox: tuple) -> str:

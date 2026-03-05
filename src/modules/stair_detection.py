@@ -182,12 +182,6 @@ class StairDetector:
             x1, y1, x2, y2 = line
             cv2.line(vis_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-        # 添加文字信息
-        direction_text = "上楼" if result['direction'] == 'up' else "下楼"
-        text = f"{direction_text}, 台阶数: {result['num_steps']}"
-        cv2.putText(vis_image, text, (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
         return vis_image
 
 

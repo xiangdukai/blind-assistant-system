@@ -25,11 +25,18 @@ class OCRRecognizer:
         # 尝试导入PaddleOCR
         try:
             from paddleocr import PaddleOCR
-            self.ocr = PaddleOCR(
-                use_angle_cls=self.use_angle_cls,
-                lang=self.language,
-                show_log=False
-            )
+            import paddleocr as _ppocr
+            _ver = tuple(int(x) for x in _ppocr.__version__.split('.')[:2])
+            if _ver >= (3, 0):
+                # PaddleOCR 3.x：用 PP-OCRv4 轻量 mobile 模型，速度更快
+                self.ocr = PaddleOCR(lang=self.language, ocr_version='PP-OCRv4')
+            else:
+                self.ocr = PaddleOCR(
+                    use_angle_cls=self.use_angle_cls,
+                    lang=self.language,
+                    show_log=False
+                )
+            self._use_predict_api = _ver >= (3, 0)
         except ImportError:
             print("警告: PaddleOCR未安装,OCR功能将不可用")
 
@@ -48,7 +55,26 @@ class OCRRecognizer:
             return None
 
         # 步骤1: PaddleOCR检测和识别
-        results = self.ocr.ocr(image, cls=self.use_angle_cls)
+        if getattr(self, '_use_predict_api', False):
+            # PaddleOCR 3.x: predict() 返回 list of dict
+            raw = self.ocr.predict(image)
+            if not raw:
+                return None
+            results = [[]]
+            for item in raw:
+                for box, (txt, score) in zip(item.get('rec_boxes', []), item.get('rec_texts_with_scores', [])):
+                    results[0].append([box, [txt, score]])
+            if not results[0]:
+                # 尝试兼容另一种返回格式
+                results = [[]]
+                for item in raw:
+                    boxes = item.get('dt_polys', [])
+                    texts = item.get('rec_text', [])
+                    scores = item.get('rec_score', [])
+                    for box, txt, score in zip(boxes, texts, scores):
+                        results[0].append([box, [txt, score]])
+        else:
+            results = self.ocr.ocr(image, cls=self.use_angle_cls)
 
         if results is None or len(results) == 0 or results[0] is None:
             return None
@@ -80,6 +106,9 @@ class OCRRecognizer:
                 'distance': distance,
                 'direction': direction
             })
+
+        if len(text_items) == 0:
+            return None
 
         return {
             'detected': True,
