@@ -155,12 +155,17 @@ if __name__ == "__main__":
         np.array([1.1, 2.1, 3.1]),
         np.array([1.2, 2.2, 3.2])
     ]
-
-    for z in measurements:
+    step = np.array([0.1,0.1,0.1])
+    nums_step = 20
+    for _ in range(nums_step):
+        measurements.append(measurements[-1]+step)
+    #print(f"测试数据{measurements}\n")
+    for i,z in enumerate(measurements):
+        print(f"第{i}次测试")
         # 预测
         predicted = kf.predict()
         print(f"预测位置: {predicted}")
-
+        print(f"测试数据：{z}")
         # 更新
         kf.update(z)
         print(f"更新后位置: {kf.get_position()}")

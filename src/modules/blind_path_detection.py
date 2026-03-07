@@ -5,7 +5,7 @@
 
 import cv2
 import numpy as np
-from typing import Optional, Dict
+from typing import List, Optional, Dict
 
 
 class BlindPathDetector:
@@ -18,45 +18,73 @@ class BlindPathDetector:
         Args:
             config: 配置字典
         """
-        self.model_path = config.get('model_path', 'models/pp_liteseg.pth')
-        self.model = None  # TODO: 加载语义分割模型 (PP-LiteSeg或YOLO-Seg)
+        self.model_path = config.get('model_path', 'models/pidnet_s_cityscapes.pth')
+        self.model_type = config.get('model_type', 'pidnet')
+        self.model = None
+        self._load_model()
 
-    def detect(self, image: np.ndarray) -> Optional[Dict]:
+    def _load_model(self):
+        """加载分割模型（支持 YOLO-seg .pt 格式）"""
+        import os
+        if not os.path.exists(self.model_path):
+            print(f"盲道检测模型文件不存在 ({self.model_path})，将使用颜色特征检测")
+            return
+        if self.model_path.endswith('.pt'):
+            try:
+                from ultralytics import YOLO
+                self.model = YOLO(self.model_path)
+                print(f"盲道检测YOLO-seg模型加载成功: {self.model_path}")
+            except Exception as e:
+                print(f"盲道检测模型加载失败: {e}，将使用颜色特征检测")
+        else:
+            print(f"盲道检测模型格式暂不支持自动加载 ({self.model_path})，将使用颜色特征检测")
+
+    def detect(self, image: np.ndarray, detections: List[Dict], depth_map: np.ndarray) -> Optional[Dict]:
         """
-        检测图像中的盲道
-
+        精确分离图像中的盲道
         Args:
             image: 输入图像
-
+            detections: 检测结果列表
         Returns:
             检测结果字典
         """
-        # 步骤1: 语义分割
-        segmentation_map = self._segment(image)
+        # 步骤1: 从 detections 中筛选出 class_name 为 'blind_path' 的检测结果
+        blind_path_detections = [d for d in detections if d['class_name'] == 'blind_path']
 
+        if not blind_path_detections:
+            return None  # 如果没有检测到盲道，返回 None
+
+        # 步骤2: 根据置信度选择置信度最高的检测结果
+        best_detection = max(blind_path_detections, key=lambda d: d['confidence'])  # 'confidence' 代表置信度字段
+
+        # 步骤3: 从最佳检测结果中提取 bbox 并进行后续处理
+        x1, y1, x2, y2 = best_detection["bbox"]  # bbox: (x1, y1, x2, y2)
+        roi = image[y1:y2, x1:x2]
+
+        # 步骤4: 语义分割
+        segmentation_map = self._segment(roi)
         if segmentation_map is None:
             return None
 
-        # 步骤2: 提取盲道区域
+        # 步骤5: 提取盲道区域
         blind_path_mask = self._extract_blind_path(segmentation_map)
-
         if blind_path_mask is None or np.sum(blind_path_mask) == 0:
             return None
 
-        # 步骤3: 计算盲道中心线
+        # 步骤6: 计算盲道中心线
         center_line = self._compute_center_line(blind_path_mask)
 
-        # 步骤4: 计算偏离程度
+        # 步骤7: 计算偏离程度
         deviation = self._calculate_deviation(center_line, image.shape[1])
 
-        # 步骤5: 确定引导方向
+        # 步骤8: 确定引导方向
         guidance_direction = self._determine_guidance(deviation)
 
         return {
             'detected': True,
             'mask': blind_path_mask,
             'center_line': center_line,
-            'deviation': deviation,  # 偏离中心的像素值,正数向右,负数向左
+            'deviation': deviation,  # 偏离中心的像素值, 正数向右, 负数向左
             'guidance': guidance_direction  # 'left', 'right', 'straight'
         }
 
@@ -70,23 +98,80 @@ class BlindPathDetector:
         Returns:
             分割结果图
         """
-        # TODO: 实现语义分割
-        # segmentation_map = self.model(image)
-        return None
+        if self.model is not None:
+            # YOLO-seg 推理：返回第一类的分割 mask
+            results = self.model(image, verbose=False)
+            if results and results[0].masks is not None:
+                masks = results[0].masks.data.cpu().numpy()
+                if len(masks) > 0:
+                    combined = np.any(masks > 0.5, axis=0).astype(np.uint8) * 255
+                    return combined.astype(np.uint8)
+            return None
+
+        # ── 无模型：颜色 + 轮廓形状联合检测 ──────────────────
+        h, w = image.shape[:2]
+
+        # 只检测下 2/3 区域（盲道在地面，上方不可能有）
+        roi_y = h // 3
+        roi = image[roi_y:, :]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+        # 双范围黄色：涵盖标准黄、旧化偏橙、逆光偏暗等情况
+        mask_std  = cv2.inRange(hsv, np.array([10, 60, 80]),  np.array([38, 255, 255]))  # 标准黄
+        mask_pale = cv2.inRange(hsv, np.array([15, 30, 160]), np.array([35, 100, 255]))  # 浅黄/米色
+        mask = cv2.bitwise_or(mask_std, mask_pale)
+
+        # 形态学：开运算去小噪点，闭运算填孔连通
+        k_open  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        k_close = cv2.getStructuringElement(cv2.MORPH_RECT,    (21, 7))  # 横向拉伸以连通砖块
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  k_open,  iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_close, iterations=2)
+
+        # 连通域过滤：去掉小面积噪声，保留像素数 ≥ ROI 面积 0.3% 的区域
+        n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        min_area = max(roi.shape[0] * roi.shape[1] * 0.003, 800)
+        valid = np.zeros_like(mask)
+        for i in range(1, n_lab):
+            if stats[i, cv2.CC_STAT_AREA] >= min_area:
+                valid[labels == i] = 255
+
+        # 轮廓验证：盲道区域应近似矩形，过滤圆形/细长噪声
+        contours, _ = cv2.findContours(valid, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filtered = np.zeros_like(valid)
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < min_area:
+                continue
+            rect = cv2.minAreaRect(cnt)
+            rw, rh = rect[1]
+            if rw == 0 or rh == 0:
+                continue
+            aspect = max(rw, rh) / min(rw, rh)
+            solidity = area / (rw * rh + 1e-6)
+            # 盲道砖：长宽比 1~15，实心度 > 0.3
+            if 1.0 <= aspect <= 15 and solidity > 0.3:
+                cv2.drawContours(filtered, [cnt], -1, 255, -1)
+
+        if cv2.countNonZero(filtered) < 800:
+            return None
+
+        # 还原至原图坐标
+        full_mask = np.zeros((h, w), dtype=np.uint8)
+        full_mask[roi_y:] = filtered
+        return full_mask
 
     def _extract_blind_path(self, segmentation_map: np.ndarray) -> Optional[np.ndarray]:
         """
         从分割图中提取盲道区域
 
         Args:
-            segmentation_map: 分割结果图
+            segmentation_map: 分割结果图（已由 _segment 生成 mask）
 
         Returns:
             盲道mask
         """
-        # TODO: 根据类别ID提取盲道
-        # blind_path_mask = (segmentation_map == BLIND_PATH_CLASS_ID).astype(np.uint8) * 255
-        return None
+        # _segment 已直接返回二值 mask，此处直接透传
+        return segmentation_map
 
     def _compute_center_line(self, mask: np.ndarray) -> np.ndarray:
         """
@@ -98,16 +183,18 @@ class BlindPathDetector:
         Returns:
             中心线坐标数组
         """
-        # 使用形态学骨架化提取中心线
-        skeleton = cv2.ximgproc.thinning(mask)
-
-        # 提取中心线点
-        points = np.column_stack(np.where(skeleton > 0))
+        # 按行扫描 mask，取每行非零像素的中心 x 坐标，构成中心线
+        points = []
+        for row in range(mask.shape[0]):
+            cols = np.where(mask[row] > 0)[0]
+            if len(cols) > 0:
+                center_x = int((cols[0] + cols[-1]) / 2)
+                points.append([row, center_x])
 
         if len(points) == 0:
             return np.array([])
 
-        return points
+        return np.array(points)
 
     def _calculate_deviation(self, center_line: np.ndarray, image_width: int) -> float:
         """

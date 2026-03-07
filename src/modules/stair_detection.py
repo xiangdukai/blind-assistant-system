@@ -5,7 +5,7 @@
 
 import cv2
 import numpy as np
-from typing import Optional, Dict
+from typing import List, Optional, Dict
 from sklearn.cluster import DBSCAN
 
 
@@ -31,50 +31,58 @@ class StairDetector:
         # 水平线判断阈值(角度)
         self.horizontal_angle_threshold = 20
 
-    def detect(self, image: np.ndarray) -> Optional[Dict]:
+    def detect(self, image: np.ndarray, detections: List[Dict], depth_map: np.ndarray) -> Optional[Dict]:
         """
-        检测图像中的楼梯
-
+        分析图像中的楼梯
         Args:
             image: 输入图像(BGR格式)
-
+            detections: 检测结果列表，每个元素包含bbox和class_id等信息
         Returns:
             检测结果字典，包含方向、台阶数等信息，如果未检测到则返回None
         """
-        # 步骤1: 预处理
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # 步骤1: 从 detections 中筛选出 class_name 为 'staircase' 的检测结果
+        staircase_detections = [d for d in detections if d['class_name'] == 'staircase']
+
+        if not staircase_detections:
+            return None  # 如果没有检测到楼梯，返回 None
+
+        # 步骤2: 根据置信度选择置信度最高的检测结果
+        best_detection = max(staircase_detections, key=lambda d: d['confidence'])  # 'confidence' 代表置信度字段
+
+        # 步骤3: 从最佳检测结果中提取 bbox 并进行后续处理
+        x1, y1, x2, y2 = best_detection["bbox"]  # bbox: (x1, y1, x2, y2)
+        roi = image[y1:y2, x1:x2]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        # 步骤2: Canny边缘检测
+        # 步骤4: Canny边缘检测
         edges = cv2.Canny(blurred, self.canny_threshold1, self.canny_threshold2)
 
-        # 步骤3: 形态学闭运算
+        # 步骤5: 形态学闭运算
         kernel = np.ones((3, 3), np.uint8)
         closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 
-        # 步骤4: 霍夫变换检测直线
+        # 步骤6: 霍夫变换检测直线
         lines = cv2.HoughLinesP(
             closed,
             rho=1,
-            theta=np.pi/180,
+            theta=np.pi / 180,
             threshold=self.hough_threshold,
             minLineLength=self.min_line_length,
             maxLineGap=self.max_line_gap
         )
-
         if lines is None or len(lines) == 0:
             return None
 
-        # 步骤5: 筛选水平线
+        # 步骤7: 筛选水平线
         horizontal_lines = self._filter_horizontal_lines(lines)
-
         if len(horizontal_lines) < 3:  # 至少需要3条水平线才能判断为楼梯
             return None
 
-        # 步骤6: 聚类统计台阶数
+        # 步骤8: 聚类统计台阶数
         num_steps = self._count_steps(horizontal_lines)
 
-        # 步骤7: 判断方向(上楼/下楼)
+        # 步骤9: 判断方向(上楼/下楼)
         direction = self._determine_direction(horizontal_lines, image.shape[0])
 
         return {
@@ -181,12 +189,6 @@ class StairDetector:
         for line in result['lines']:
             x1, y1, x2, y2 = line
             cv2.line(vis_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-        # 添加文字信息
-        direction_text = "上楼" if result['direction'] == 'up' else "下楼"
-        text = f"{direction_text}, 台阶数: {result['num_steps']}"
-        cv2.putText(vis_image, text, (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         return vis_image
 
