@@ -5,7 +5,8 @@
 
 import numpy as np
 from typing import List, Dict, Tuple, Optional
-
+from collections import deque
+import time
 
 class DangerDetector:
     """动态危险预测器"""
@@ -49,6 +50,7 @@ class DangerDetector:
         Returns:
             危险目标列表，每个元素包含危险等级、碰撞时间、方向等信息
         """
+        
         dangers = []
 
         for det in detections:
@@ -91,13 +93,14 @@ class DangerDetector:
                           velocity: np.ndarray,
                           dt: float = 0.1) -> List[np.ndarray]:
         """
-        预测未来轨迹（匀速直线运动模型）
-
+        预测未来轨迹（恒定加速度模型CA），无加速度时退化为匀速模型CV
+        
+        公式：x(t) = x0 + v0*t + 0.5*a*t²
         Args:
             position: 当前3D位置 [X, Y, Z] (米)
             velocity: 3D速度向量 [vx, vy, vz] (米/秒)
             dt: 时间步长(秒)
-
+        
         Returns:
             预测轨迹点列表
         """
@@ -112,7 +115,13 @@ class DangerDetector:
         trajectory = []
         num_steps = int(self.prediction_time / dt)
         for i in range(num_steps):
-            predicted_pos = position + velocity * (i * dt)
+            t = i /self.fps  
+            if acceleration is not None:
+                # 恒定加速度模型
+                predicted_pos = position + velocity * t + 0.5 * acceleration * (t **2)
+            else:
+                # 退化为匀速模型
+                predicted_pos = position + velocity * t
             trajectory.append(predicted_pos)
 
         return trajectory
