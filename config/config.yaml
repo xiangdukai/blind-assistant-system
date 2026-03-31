@@ -58,11 +58,18 @@ tracker:
 # 楼梯检测
 stair_detection:
   enabled: true
-  canny_threshold1: 50
-  canny_threshold2: 150
-  hough_threshold: 100
-  min_line_length: 50
-  max_line_gap: 10
+  debug: false
+  canny_threshold1: 30
+  canny_threshold2: 100
+  hough_threshold: 45
+  min_line_length: 12
+  max_line_gap: 2
+  dbscan_eps: 0.03
+  dbscan_min_samples: 3
+  min_valid_line_threshold: 1
+  min_valid_step_threshold: 3
+  theta_band_width_deg: 8.0
+  parallel_angle_threshold_deg: 8.0
 
 # 斑马线检测
 crosswalk_detection:
